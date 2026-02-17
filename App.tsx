@@ -118,6 +118,16 @@ export default function App() {
 
     console.log("INITIAL LOAD RAW RESPONSE:", text);
 
+    if (text.includes("Unable to open file")) {
+      console.log("No saved file yet; using defaults.");
+      // Keep initialLists already in state
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${text.slice(0, 120)}`);
+    }
+
     let json;
     try {
       json = JSON.parse(text);
@@ -133,7 +143,6 @@ export default function App() {
       ...prev,
       [activeTab]: normalized,
     }));
-
   } catch (error: any) {
     Alert.alert("Load Error", "Failed to connect to server.");
     console.log("Load error:", error?.message ?? error);
@@ -142,9 +151,12 @@ export default function App() {
   }
 }, [activeTab]);
 
+  useEffect(() => {
+    loadInitialData();
+  }, [loadInitialData]);
 
   // Load and Save handlers
-  const onLoad = useCallback(async () => {
+ const onLoad = useCallback(async () => {
   try {
     setBusy(true);
 
@@ -152,6 +164,15 @@ export default function App() {
     const text = await response.text();
 
     console.log("LOAD BUTTON RAW RESPONSE:", text);
+
+    if (text.includes("Unable to open file")) {
+      Alert.alert("No Saved List Yet", "Nothing saved for this user yet. Add items and press Save first.");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${text.slice(0, 120)}`);
+    }
 
     let json;
     try {
@@ -179,6 +200,7 @@ export default function App() {
   }
 }, [activeTab]);
 
+  
   const onSave = useCallback(async () => {
   try {
     setBusy(true);
