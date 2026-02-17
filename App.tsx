@@ -190,6 +190,7 @@ export default function App() {
     setItemsForTab((prev) => prev.filter((i) => i.id !== item.id).concat(splitItems));
   };
 
+  // Show loading indicator
   if (loading) {
     return (
       <SafeAreaView style={{ flex: 1, alignItems: "center", justifyContent: "center"}}>
@@ -198,6 +199,53 @@ export default function App() {
         </SafeAreaView>
     );
   }
+
+  // Load and Save handlers
+  const onLoad = useCallback(async () => {
+    try {
+      setBusy(true);
+      const response = await fetch(LOAD_URL.replace('{USERNAME}', USERNAME));
+      const json = await response.json();
+      const normalized = normalizeRemoteData(json);
+      
+      setLists((prev) => ({
+        ...prev,
+        [activeTab]: normalized,
+      }));
+      Alert.alert('Success', 'List loaded successfully!');
+    } catch (error) {
+      Alert.alert('Error', 'Failed to load data.');
+      console.error('Load error:', error);
+    } finally {
+      setBusy(false);
+    }
+  }, [activeTab]);
+  
+  const onSave = useCallback(async () => {
+    try {
+      setBusy(true);
+      const payload = {
+        user: USERNAME,
+        items: lists[activeTab].map((i) => i.text),
+      };
+
+      const response = await fetch(SAVE_URL.replace('{USERNAME}', USERNAME), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      
+      if (!response.ok) throw new Error('Network response was not ok');
+      Alert.alert('Success', 'List saved successfully!');
+    }
+    catch (error) {
+      Alert.alert('Error', 'Failed to save data.');
+      console.error('Save error:', error);
+    }
+    finally {
+      setBusy(false);
+    }
+  }, [lists, activeTab]);
 
   // Render
   return (
@@ -292,6 +340,24 @@ export default function App() {
               <Ionicons name="add-circle" size={34} color="green" />
             </Pressable>
           </View>
+
+          {/* Load and Save button */}
+          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
+            <Pressable
+              onPress={onLoad}
+              disabled={busy}
+              style={[styles.joinButton, busy && { opacity: 0.5 }]}
+            >
+              <Text style={styles.joinText}>Load</Text>
+            </Pressable>
+            <Pressable
+              onPress={onSave}
+              disabled={busy}
+              style={[styles.joinButton, busy && { opacity: 0.5 }]}
+            >
+              <Text style={styles.joinText}>Save</Text>
+            </Pressable>
+          </View> 
 
           <StatusBar style="auto" />
         </View>
