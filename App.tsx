@@ -1,12 +1,10 @@
-import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useState, useCallback } from 'react';
+import { StatusBar } from "expo-status-bar";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  SafeAreaView,
-  VirtualizedList,
   ActivityIndicator,
+  Alert,
   Keyboard,
   KeyboardAvoidingView,
-  Alert,
   Platform,
   Pressable,
   StyleSheet,
@@ -14,407 +12,364 @@ import {
   TextInput,
   TouchableWithoutFeedback,
   View,
-  SafeAreaViewBase,
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+  VirtualizedList,
+  SafeAreaView,
+} from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 
-const USERNAME = "zellarunning";
+const USERNAME = "zellarun";
 
-// Load and Save URLs
-const LOAD_URL = 'https://mec402.boisestate.edu/csclasses/cs402/codesnips/loadjson.php?user={USERNAME}';
-const SAVE_URL = 'https://mec402.boisestate.edu/csclasses/cs402/codesnips/savejson.php?user={USERNAME}';
+// Required load/save endpoints
+const LOAD_URL = `https://mec402.boisestate.edu/csclasses/cs402/codesnips/loadjson.php?user=${USERNAME}`;
+const SAVE_URL = `https://mec402.boisestate.edu/csclasses/cs402/codesnips/savejson.php?user=${USERNAME}`;
 
-// Types and Initial Data
-type ListItem = {
-  id: string;
-  text: string;
-  parts?: string[]; // used for join/split
-};
+// Extra credit endpoints (proxy cache)
+const SIZE_URL = `https://mec402.boisestate.edu/csclasses/cs402/codesnips/listsize.php?user=${USERNAME}`;
+const ELEMENT_URL = (i: number) =>
+  `https://mec402.boisestate.edu/csclasses/cs402/codesnips/getelement.php?user=${USERNAME}&item=${i}`;
 
-// Tab keys
-type TabKey = 'Todo' | 'School' | 'Errands';
+// Types
+type ListItem = { id: string; text: string };
 
-// Available tabs
-const tabs: TabKey[] = ['Todo', 'School', 'Errands'];
-
-// Initial lists for each tab
-const initialLists: Record<TabKey, ListItem[]> = {
-  Todo: [
-    { id: '1', text: 'Buy groceries' },
-    { id: '2', text: 'Walk the dog' },
-    { id: '3', text: 'Read a book' },
-  ],
-  School: [
-    { id: '1', text: 'Finish readings' },
-    { id: '2', text: 'Submit HW' },
-  ],
-  Errands: [
-    { id: '1', text: 'Post office' },
-    { id: '2', text: 'Get gas' },
-  ],
-};
-
-// Helper to normalize remote data into ListItem[]
+// Server format we’ve observed: { items: string[] }
 function normalizeRemoteData(raw: any): ListItem[] {
-  let arr = raw;
-
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    if (Array.isArray(raw.items)) arr = raw.items;
-    else if (Array.isArray(raw.data)) arr = raw.data;
-    else arr = [];
-  }
-
-  if (!Array.isArray(arr)) return [];
-
-  return arr
-    .map((x, idx) => {
-      // string case
-      if(typeof x === "string"){ 
-        return { id: `${Date.now()}-${idx}`, text: x };
-      }
-
-      // object case
-      if (typeof x === "object" && x !== null) {
-        const text = x.text ?? x.name ?? x.value ?? JSON.stringify(x);
-        const id = x.id ?? `${Date.now()} ~ ${idx}`;
-        return { id: String(id), text: String(text) };
-      }
-
-    return { id: `$(Date.now()}-${idx}`, text: String(x) };
-  })
-  .filter((item) => item.text.trim().length > 0);
+  if (!raw || !Array.isArray(raw.items)) return [];
+  return raw.items.map((text: string, index: number) => ({
+    id: `${Date.now()}-${index}`,
+    text: String(text),
+  }));
 }
 
-// Main App Component
+// Safely get JSON from endpoints that sometimes return plain text
+async function fetchText(url: string) {
+  const res = await fetch(url);
+  const text = await res.text();
+  return { res, text };
+}
+
+// Main App
 export default function App() {
+  // Basic UI state
+  const [newText, setNewText] = useState("");
+  const [loading, setLoading] = useState(true); // initial load
+  const [busy, setBusy] = useState(false);      // buttons / background fetch
+  const [useCacheMode, setUseCacheMode] = useState(true); // extra credit toggle
 
-  const [activeTab, setActiveTab] = useState<TabKey>('Todo');
-  const [lists, setLists] = useState<Record<TabKey, ListItem[]>>(initialLists);
+  // listSize: total number of items on server
+  const [listSize, setListSize] = useState<number>(0);
 
-  const [newText, setNewText] = useState('');
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  // cache: index -> text
+  const [cache, setCache] = useState<Map<number, string>>(new Map());
 
-  // Loading and busy states
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
+  // inFlight: track which indices are currently being fetched (prevents spam)
+  const inFlightRef = useRef<Set<number>>(new Set());
 
-  const items = lists[activeTab];
+  // indices array for VirtualizedList data
+  const indices = useMemo(() => Array.from({ length: listSize }, (_, i) => i), [listSize]);
 
-  // Helper to update items for the active tab
-  const setItemsForTab = (updater: (prev: ListItem[]) => ListItem[]) => {
-    setLists((prev) => ({
-      ...prev,
-      [activeTab]: updater(prev[activeTab]),
-    }));
-  };
+  // localItems: used in normal mode (not cache mode)
+  const [localItems, setLocalItems] = useState<ListItem[]>([
+    { id: "1", text: "Buy groceries" },
+    { id: "2", text: "Walk the dog" },
+    { id: "3", text: "Read a book" },
+  ]);
 
-  // Load data on mount
-  const loadInitialData = useCallback(async () => {
-  try {
-    setLoading(true);
+  // load list size from server (extra credit)
+  const loadListSize = useCallback(async () => {
+    const { res, text } = await fetchText(SIZE_URL);
+    console.log("SIZE raw:", text);
 
-    const response = await fetch(LOAD_URL);
-    const text = await response.text();
+    if (!res.ok) throw new Error(`Size HTTP ${res.status}`);
 
-    console.log("INITIAL LOAD RAW RESPONSE:", text);
+    let size = 0;
 
-    if (text.includes("Unable to open file")) {
-      console.log("No saved file yet; using defaults.");
-      // Keep initialLists already in state
-      return;
-    }
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${text.slice(0, 120)}`);
-    }
-
-    let json;
+    // Try JSON first
     try {
-      json = JSON.parse(text);
-    } catch (e) {
-      Alert.alert("Load Error", "Server did not return JSON. Check console logs.");
-      console.log("Not valid JSON:", text.slice(0, 200));
-      return;
+      const json = JSON.parse(text);
+      if (typeof json === "number") size = json;
+      else if (typeof json?.size === "number") size = json.size;
+      else if (typeof json?.count === "number") size = json.count;
+      else size = Number(text);
+    } catch {
+      size = Number(text);
     }
 
-    const normalized = normalizeRemoteData(json);
+    if (!Number.isFinite(size) || size < 0) size = 0;
+    setListSize(size);
+    return size;
+  }, []);
 
-    setLists((prev) => ({
-      ...prev,
-      [activeTab]: normalized,
-    }));
-  } catch (error: any) {
-    Alert.alert("Load Error", "Failed to connect to server.");
-    console.log("Load error:", error?.message ?? error);
-  } finally {
-    setLoading(false);
-  }
-}, [activeTab]);
+  // fetch element by index and store in cache (extra credit)
+  const fetchElement = useCallback(async (index: number) => {
+    if (cache.has(index)) return; // already cached
+    if (inFlightRef.current.has(index)) return; // already fetching
 
+    inFlightRef.current.add(index);
+
+    try {
+      const { res, text } = await fetchText(ELEMENT_URL(index));
+      // element might be JSON or plain text
+      if (!res.ok) throw new Error(`Element HTTP ${res.status}`);
+
+      let value: any = text;
+
+      // Try JSON parse; if it fails, treat as plain text
+      try {
+        value = JSON.parse(text);
+      } catch {
+        value = text;
+      }
+
+      // Extract text from value (handles both string and { key/text/value } formats)
+      const itemText =
+        typeof value === "string"
+          ? value
+          : value?.text ?? value?.key ?? value?.value ?? JSON.stringify(value);
+
+      setCache((prev) => {
+        const next = new Map(prev);
+        next.set(index, String(itemText));
+        return next;
+      });
+    } catch (e: any) {
+      console.log("fetchElement error:", e?.message ?? e);
+    } finally {
+      inFlightRef.current.delete(index);
+    }
+  }, [cache]);
+
+  // Cache mode initialization: load list size, then warm up first few items for better UX
+  const initCacheMode = useCallback(async () => {
+    try {
+      setLoading(true);
+      setCache(new Map());
+      inFlightRef.current.clear();
+
+      const size = await loadListSize();
+
+      const warmup = Math.min(size, 12);
+      for (let i = 0; i < warmup; i++) {
+        await fetchElement(i);
+      }
+    } catch (e: any) {
+      console.log("initCacheMode error:", e?.message ?? e);
+      Alert.alert("Load Error", "Could not load cached list. Using local list instead.");
+      setUseCacheMode(false);
+    } finally {
+      setLoading(false);
+    }
+  }, [fetchElement, loadListSize]);
+
+  // intialize normal mode by loading entire list from server
+  const initLocalMode = useCallback(async () => {
+    try {
+      setLoading(true);
+
+      const { res, text } = await fetchText(LOAD_URL);
+      console.log("LOAD raw:", text);
+
+      // if no saved file yet
+      if (text.includes("Unable to open file")) {
+        setLoading(false);
+        return;
+      }
+
+      if (!res.ok) throw new Error(`Load HTTP ${res.status}`);
+
+      let json: any;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error(`Not JSON: ${text.slice(0, 30)}`);
+      }
+
+      setLocalItems(normalizeRemoteData(json));
+    } catch (e: any) {
+      console.log("initLocalMode error:", e?.message ?? e);
+      Alert.alert("Load Error", "Could not load remote list. Using defaults.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // On mount, initialize based on current mode (cache or local)
   useEffect(() => {
-    loadInitialData();
-  }, [loadInitialData]);
+    if (useCacheMode) initCacheMode();
+    else initLocalMode();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useCacheMode]);
 
-  // Load and Save handlers
- const onLoad = useCallback(async () => {
-  try {
-    setBusy(true);
-
-    const response = await fetch(LOAD_URL);
-    const text = await response.text();
-
-    console.log("LOAD BUTTON RAW RESPONSE:", text);
-
-    if (text.includes("Unable to open file")) {
-      Alert.alert("No Saved List Yet", "Nothing saved for this user yet. Add items and press Save first.");
-      return;
-    }
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${text.slice(0, 120)}`);
-    }
-
-    let json;
+  // Basic load/save handlers
+  const onLoad = useCallback(async () => {
     try {
-      json = JSON.parse(text);
+      setBusy(true);
+      if (useCacheMode) {
+        await initCacheMode();
+      } else {
+        await initLocalMode();
+      }
+      Alert.alert("Loaded", "Load complete.");
     } catch (e) {
-      Alert.alert("Load Error", "Server did not return JSON.");
-      console.log("Not valid JSON:", text.slice(0, 200));
-      return;
+      Alert.alert("Load Error", "Could not load.");
+    } finally {
+      setBusy(false);
     }
+  }, [initCacheMode, initLocalMode, useCacheMode]);
 
-    const normalized = normalizeRemoteData(json);
+  // Ensure ALL items are available for saving (cache mode)
+  const ensureAllCached = useCallback(async () => {
+    const size = listSize;
+    for (let i = 0; i < size; i++) {
+      if (!cache.has(i)) {
+        // eslint-disable-next-line no-await-in-loop
+        await fetchElement(i);
+      }
+    }
+  }, [cache, fetchElement, listSize]);
 
-    setLists((prev) => ({
-      ...prev,
-      [activeTab]: normalized,
-    }));
-
-    Alert.alert("Success", "List loaded successfully!");
-
-  } catch (error: any) {
-    Alert.alert("Error", "Failed to load data.");
-    console.log("Load error:", error?.message ?? error);
-  } finally {
-    setBusy(false);
-  }
-}, [activeTab]);
-
-  
   const onSave = useCallback(async () => {
-  try {
-    setBusy(true);
+    try {
+      setBusy(true);
 
-    const payload = {
-      items: lists[activeTab].map((i) => i.text),
-    };
+      let itemsToSave: string[] = [];
 
-    const response = await fetch(SAVE_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
+      if (useCacheMode) {
+        // fetch everything so save is complete
+        await ensureAllCached();
 
-    const text = await response.text();
-    console.log("SAVE RAW RESPONSE:", text);
+        itemsToSave = Array.from({ length: listSize }, (_, i) => cache.get(i) ?? "").filter(
+          (x) => x.trim().length > 0
+        );
+      } else {
+        itemsToSave = localItems.map((i) => i.text);
+      }
 
-    if (!response.ok) {
-      Alert.alert("Save Error", "Server returned an error.");
-      console.log("HTTP error:", response.status, text);
-      return;
+      const payload = { items: itemsToSave };
+
+      const { res, text } = await fetchText(SAVE_URL);
+     
+      const saveRes = await fetch(SAVE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const saveText = await saveRes.text();
+      console.log("SAVE raw:", saveText);
+
+      if (!saveRes.ok) {
+        Alert.alert("Save Error", `Server error (${saveRes.status})`);
+        return;
+      }
+
+      Alert.alert("Saved", "Save complete.");
+    } catch (e: any) {
+      console.log("Save error:", e?.message ?? e);
+      Alert.alert("Save Error", "Could not save.");
+    } finally {
+      setBusy(false);
+    }
+  }, [cache, ensureAllCached, listSize, localItems, useCacheMode]);
+
+  // Add item handler: adds to end of list, either by putting in cache (cache mode) or local state (normal mode)
+  const addItem = useCallback(() => {
+    const trimmed = newText.trim();
+    if (!trimmed) return;
+
+    if (useCacheMode) {
+      setListSize((prev) => {
+        const nextIndex = prev;
+        setCache((old) => {
+          const next = new Map(old);
+          next.set(nextIndex, trimmed);
+          return next;
+        });
+        return prev + 1;
+      });
+    } else {
+      setLocalItems((prev) => [...prev, { id: `${Date.now()}`, text: trimmed }]);
     }
 
-    Alert.alert("Success", "List saved successfully!");
-
-  } catch (error: any) {
-    Alert.alert("Error", "Failed to save data.");
-    console.log("Save error:", error?.message ?? error);
-  } finally {
-    setBusy(false);
-  }
-}, [lists, activeTab]);
-
-
-  // Handlers
-  const switchTab = (tab: TabKey) => {
-    setActiveTab(tab);
-    setSelectedIds([]);
-    setNewText('');
+    setNewText("");
     Keyboard.dismiss();
-  };
+  }, [newText, useCacheMode]);
 
-  // Add new item
-  const addItem = () => {
-    const trimmed = newText.trim();
-    if (trimmed === '') return;
+  const deleteAtIndex = useCallback((index: number) => {
+    setCache((prev) => {
+      const next = new Map(prev);
+      for (let i = index; i < listSize - 1; i++) {
+        const v = next.get(i + 1);
+        if (v === undefined) next.delete(i);
+        else next.set(i, v);
+      }
+      next.delete(listSize - 1);
+      return next;
+    });
+    setListSize((prev) => Math.max(0, prev - 1));
+  }, [listSize]);
 
-    const newItem: ListItem = {
-      id: Date.now().toString(),
-      text: trimmed,
-    };
+  const deleteLocal = useCallback((id: string) => {
+    setLocalItems((prev) => prev.filter((x) => x.id !== id));
+  }, []);
 
-    // Update state
-    setItemsForTab((prev) => [...prev, newItem]);
-    setNewText('');
-    Keyboard.dismiss();
-  };
-
-  // Delete item
-  const deleteItem = (id: string) => {
-    setItemsForTab((prev) => prev.filter((i) => i.id !== id));
-    setSelectedIds((prev) => prev.filter((x) => x !== id));
-  };
-
-  // Toggle selection
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  };
-
-  // Join selected items
-  const joinSelected = () => {
-    if (selectedIds.length < 2) return;
-
-    const selected = items.filter((i) => selectedIds.includes(i.id));
-    const remaining = items.filter((i) => !selectedIds.includes(i.id));
-
-    const joined: ListItem = {
-      id: Date.now().toString(),
-      text: selected.map((i) => i.text).join(' / '),
-      parts: selected.map((i) => i.text),
-    };
-
-    setItemsForTab(() => [...remaining, joined]);
-    setSelectedIds([]);
-  };
-
-  // Split item
-  const splitItem = (item: ListItem) => {
-    if (!item.parts) return;
-
-    const splitItems: ListItem[] = item.parts.map((text) => ({
-      id: `${Date.now()}-${Math.random()}`,
-      text,
-    }));
-
-    setItemsForTab((prev) => prev.filter((i) => i.id !== item.id).concat(splitItems));
-  };
-
-  // Show loading indicator
+  // render loading state if we’re still initializing
   if (loading) {
     return (
-      <SafeAreaView style={{ flex: 1, alignItems: "center", justifyContent: "center"}}>
+      <SafeAreaView style={styles.center}>
         <ActivityIndicator />
-        <Text style={{ marginTop: 10 }}> Loading Remote List...</Text>
-        </SafeAreaView>
+        <Text style={{ marginTop: 10 }}>Loading…</Text>
+      </SafeAreaView>
     );
   }
 
-  // Render
+  // Main UI
   return (
     <KeyboardAvoidingView
       style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 50 : 0}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 50 : 0}
     >
       <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
         <View style={styles.container}>
-          <Text style={styles.title}>Simple List App</Text>
+          <Text style={styles.title}>Connected List App</Text>
+          <Text style={styles.subtitle}>User: {USERNAME}</Text>
 
-          {/* Tabs */}
-          <View style={styles.tabRow}>
-            {tabs.map((tab) => (
-              <Pressable
-                key={tab}
-                onPress={() => switchTab(tab)}
-                style={[styles.tab, activeTab === tab && styles.tabActive]}
-              >
-                <Text
-                  style={[
-                    styles.tabText,
-                    activeTab === tab && styles.tabTextActive,
-                  ]}
-                >
-                  {tab}
-                </Text>
-              </Pressable>
-            ))}
+          {/* Mode toggle */}
+          <View style={{ flexDirection: "row", gap: 10, marginBottom: 10 }}>
+            <Pressable
+              onPress={() => setUseCacheMode(false)}
+              style={[styles.modeBtn, !useCacheMode && styles.modeBtnActive]}
+            >
+              <Text style={!useCacheMode ? styles.modeTextActive : styles.modeText}>
+                Normal Mode
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => setUseCacheMode(true)}
+              style={[styles.modeBtn, useCacheMode && styles.modeBtnActive]}
+            >
+              <Text style={useCacheMode ? styles.modeTextActive : styles.modeText}>
+                Cache Mode (Extra Credit)
+              </Text>
+            </Pressable>
           </View>
 
-          {/* Load and Save button */}
-          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
-            <Pressable
-              onPress={onLoad}
-              disabled={busy}
-              style={[styles.joinButton, busy && { opacity: 0.5 }]}
-            >
-              <Text style={styles.joinText}>Load</Text>
+          {/* Load / Save */}
+          <View style={{ flexDirection: "row", gap: 10, marginBottom: 10 }}>
+            <Pressable onPress={onLoad} disabled={busy} style={[styles.actionBtn, busy && styles.disabled]}>
+              <Text style={styles.actionText}>{busy ? "…" : "Load"}</Text>
             </Pressable>
-            <Pressable
-              onPress={onSave}
-              disabled={busy}
-              style={[styles.joinButton, busy && { opacity: 0.5 }]}
-            >
-              <Text style={styles.joinText}>Save</Text>
+            <Pressable onPress={onSave} disabled={busy} style={[styles.actionBtn, busy && styles.disabled]}>
+              <Text style={styles.actionText}>{busy ? "…" : "Save"}</Text>
             </Pressable>
-          </View> 
+          </View>
 
-          {/* Join button */}
-          <Pressable
-            style={[
-              styles.joinButton,
-              selectedIds.length < 2 && styles.joinButtonDisabled,
-            ]}
-            onPress={joinSelected}
-            disabled={selectedIds.length < 2}
-          >
-            <Text style={styles.joinText}>Join Selected ({selectedIds.length})</Text>
-          </Pressable>
-
-          {/* List */}
-          <VirtualizedList
-            style={{ flex: 1 }}
-            contentContainerStyle={{ paddingBottom: 20 }}
-            keyboardShouldPersistTaps="handled"
-            data={items}
-            initialNumToRender={12}
-            getItemCount={(data) => data.length}
-            getItem={(data, index) => data[index]}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item }) => {
-              const selected = selectedIds.includes(item.id);
-
-              return (
-                <Pressable
-                  onPress={() => toggleSelect(item.id)}
-                  style={[styles.row, selected && styles.selectedRow]}
-                >
-                  <Text style={styles.itemText}>{item.text}</Text>
-
-                  <View style={styles.icons}>
-                    {!!item.parts && (
-                      <Pressable onPress={() => splitItem(item)} hitSlop={10}>
-                        <Ionicons name="cut" size={20} />
-                      </Pressable>
-                    )}
-
-                    <Pressable onPress={() => deleteItem(item.id)} hitSlop={10}>
-                      <Ionicons name="trash" size={20} color="red" />
-                    </Pressable>
-                  </View>
-                </Pressable>
-              );
-            }}
-          />
-
-          {/* Input row */}
+          {/* Add row */}
           <View style={styles.inputRow}>
             <TextInput
               style={styles.input}
-              placeholder={`New item for ${activeTab}`}
+              placeholder="New item…"
               value={newText}
               onChangeText={setNewText}
               onSubmitEditing={addItem}
@@ -425,6 +380,58 @@ export default function App() {
             </Pressable>
           </View>
 
+          {/* List */}
+          {useCacheMode ? (
+            <VirtualizedList
+              data={indices}
+              style={{ flex: 1 }}
+              initialNumToRender={12}
+              getItemCount={(data) => data.length}
+              getItem={(data, index) => data[index]}
+              keyExtractor={(item) => String(item)}
+              renderItem={({ item: index }) => {
+                const text = cache.get(index);
+
+                // Trigger fetch when row is about to render
+                if (text === undefined) {
+                  fetchElement(index);
+                  return (
+                    <View style={styles.row}>
+                      <Text style={styles.itemText}>Loading item {index}…</Text>
+                      <ActivityIndicator />
+                    </View>
+                  );
+                }
+
+                return (
+                  <View style={styles.row}>
+                    <Text style={styles.itemText}>{text}</Text>
+                    <Pressable onPress={() => deleteAtIndex(index)} hitSlop={10}>
+                      <Ionicons name="trash" size={20} color="red" />
+                    </Pressable>
+                  </View>
+                );
+              }}
+            />
+          ) : (
+            <VirtualizedList
+              data={localItems}
+              style={{ flex: 1 }}
+              initialNumToRender={12}
+              getItemCount={(data) => data.length}
+              getItem={(data, index) => data[index]}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item }) => (
+                <View style={styles.row}>
+                  <Text style={styles.itemText}>{item.text}</Text>
+                  <Pressable onPress={() => deleteLocal(item.id)} hitSlop={10}>
+                    <Ionicons name="trash" size={20} color="red" />
+                  </Pressable>
+                </View>
+              )}
+            />
+          )}
+
           <StatusBar style="auto" />
         </View>
       </TouchableWithoutFeedback>
@@ -434,55 +441,45 @@ export default function App() {
 
 // Styles
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 30, paddingTop: 60, backgroundColor: '#fff' },
-  title: { fontSize: 24, marginBottom: 12 },
+  container: { flex: 1, padding: 24, paddingTop: 55, backgroundColor: "#fff" },
+  center: { flex: 1, alignItems: "center", justifyContent: "center" },
 
-  tabRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
-  tab: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderColor: '#ccc',
+  title: { fontSize: 24, fontWeight: "700", marginBottom: 4 },
+  subtitle: { color: "#555", marginBottom: 12 },
+
+  modeBtn: {
+    flex: 1,
+    paddingVertical: 10,
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#ccc",
+    alignItems: "center",
   },
-  tabActive: { backgroundColor: '#111', borderColor: '#111' },
-  tabText: { fontSize: 14, color: '#111' },
-  tabTextActive: { color: '#fff' },
+  modeBtnActive: { backgroundColor: "#111", borderColor: "#111" },
+  modeText: { color: "#111" },
+  modeTextActive: { color: "#fff", fontWeight: "600" },
 
-  joinButton: {
-    padding: 10,
-    backgroundColor: '#ddd',
-    marginBottom: 10,
-    alignItems: 'center',
-    borderRadius: 8,
+  actionBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "#222",
+    alignItems: "center",
   },
-  joinButtonDisabled: { opacity: 0.5 },
-  joinText: { fontSize: 16 },
+  actionText: { color: "#fff", fontWeight: "600" },
+  disabled: { opacity: 0.5 },
+
+  inputRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 },
+  input: { flex: 1, borderWidth: 1, borderColor: "#ccc", padding: 10, borderRadius: 10 },
 
   row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    padding: 10,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 12,
     borderBottomWidth: 1,
-    borderColor: '#eee',
+    borderColor: "#eee",
   },
-  selectedRow: { backgroundColor: '#e0e0e0' },
-  itemText: { fontSize: 16 },
-
-  icons: { flexDirection: 'row', gap: 12 },
-
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 10,
-    gap: 10,
-    paddingBottom: 10,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#ccc',
-    padding: 8,
-    flex: 1,
-    borderRadius: 8,
-  },
+  itemText: { fontSize: 16, flex: 1, marginRight: 10 },
 });
