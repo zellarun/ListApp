@@ -18,15 +18,11 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
-const USERNAME = "zellarun";
+const USERNAME = "zellarunning";
 
 // Load and Save URLs
 const LOAD_URL = 'https://mec402.boisestate.edu/csclasses/cs402/codesnips/loadjson.php?user={USERNAME}';
 const SAVE_URL = 'https://mec402.boisestate.edu/csclasses/cs402/codesnips/savejson.php?user={USERNAME}';
-
-// Loading and busy states
-const [loading, setLoading] = useState(true);
-const [busy, setBusy] = useState(false);
 
 // Types and Initial Data
 type ListItem = {
@@ -59,7 +55,7 @@ const initialLists: Record<TabKey, ListItem[]> = {
 };
 
 // Helper to normalize remote data into ListItem[]
-function normalizeRemoteData(raw: any) {
+function normalizeRemoteData(raw: any): ListItem[] {
   let arr = raw;
 
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
@@ -70,25 +66,37 @@ function normalizeRemoteData(raw: any) {
 
   if (!Array.isArray(arr)) return [];
 
-  return arr.map((x, idx) => {
-    if(typeof x === "string") return { id: '${Date.now()} ~ ${idx}', text: x };
-    if (typeof x === "object" && x !== null){
-      const text = x.text ?? x.name ?? x.value ?? JSON.stringify(x);
-      const id = x.id ?? '${Date.now()} ~ ${idx}';
-      return { id: String(id), text: String(text)};
-    }
+  return arr
+    .map((x, idx) => {
+      // string case
+      if(typeof x === "string"){ 
+        return { id: `${Date.now()}-${idx}`, text: x };
+      }
 
-    return { id: '$(Date.now()} ~ ${idx}', text: String(x)};
-  });
+      // object case
+      if (typeof x === "object" && x !== null) {
+        const text = x.text ?? x.name ?? x.value ?? JSON.stringify(x);
+        const id = x.id ?? `${Date.now()} ~ ${idx}`;
+        return { id: String(id), text: String(text) };
+      }
+
+    return { id: `$(Date.now()}-${idx}`, text: String(x) };
+  })
+  .filter((item) => item.text.trim().length > 0);
 }
 
 // Main App Component
 export default function App() {
+
   const [activeTab, setActiveTab] = useState<TabKey>('Todo');
   const [lists, setLists] = useState<Record<TabKey, ListItem[]>>(initialLists);
 
   const [newText, setNewText] = useState('');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  // Loading and busy states
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
 
   const items = lists[activeTab];
 
@@ -102,27 +110,110 @@ export default function App() {
 
   // Load data on mount
   const loadInitialData = useCallback(async () => {
-    try {
-      setLoading(true);
-      const response = await fetch(LOAD_URL.replace('{USERNAME}', USERNAME));
-      const json = await response.json();
-      const normalized = normalizeRemoteData(json);
+  try {
+    setLoading(true);
 
-      setLists((prev) => ({
-        ...prev,
-        [activeTab]: normalized,
-      }));
-    } catch (error) {
-      Alert.alert('Error', 'Failed to load data. Using defaults.');
-      console.error('Load error:', error);
-    } finally {
-      setLoading(false);
+    const response = await fetch(LOAD_URL);
+    const text = await response.text();
+
+    console.log("INITIAL LOAD RAW RESPONSE:", text);
+
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch (e) {
+      Alert.alert("Load Error", "Server did not return JSON. Check console logs.");
+      console.log("Not valid JSON:", text.slice(0, 200));
+      return;
     }
-  }, [activeTab]);
-  
-  useEffect(() => {
-    loadInitialData();
-  }, []);
+
+    const normalized = normalizeRemoteData(json);
+
+    setLists((prev) => ({
+      ...prev,
+      [activeTab]: normalized,
+    }));
+
+  } catch (error: any) {
+    Alert.alert("Load Error", "Failed to connect to server.");
+    console.log("Load error:", error?.message ?? error);
+  } finally {
+    setLoading(false);
+  }
+}, [activeTab]);
+
+
+  // Load and Save handlers
+  const onLoad = useCallback(async () => {
+  try {
+    setBusy(true);
+
+    const response = await fetch(LOAD_URL);
+    const text = await response.text();
+
+    console.log("LOAD BUTTON RAW RESPONSE:", text);
+
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch (e) {
+      Alert.alert("Load Error", "Server did not return JSON.");
+      console.log("Not valid JSON:", text.slice(0, 200));
+      return;
+    }
+
+    const normalized = normalizeRemoteData(json);
+
+    setLists((prev) => ({
+      ...prev,
+      [activeTab]: normalized,
+    }));
+
+    Alert.alert("Success", "List loaded successfully!");
+
+  } catch (error: any) {
+    Alert.alert("Error", "Failed to load data.");
+    console.log("Load error:", error?.message ?? error);
+  } finally {
+    setBusy(false);
+  }
+}, [activeTab]);
+
+  const onSave = useCallback(async () => {
+  try {
+    setBusy(true);
+
+    const payload = {
+      items: lists[activeTab].map((i) => i.text),
+    };
+
+    const response = await fetch(SAVE_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const text = await response.text();
+    console.log("SAVE RAW RESPONSE:", text);
+
+    if (!response.ok) {
+      Alert.alert("Save Error", "Server returned an error.");
+      console.log("HTTP error:", response.status, text);
+      return;
+    }
+
+    Alert.alert("Success", "List saved successfully!");
+
+  } catch (error: any) {
+    Alert.alert("Error", "Failed to save data.");
+    console.log("Save error:", error?.message ?? error);
+  } finally {
+    setBusy(false);
+  }
+}, [lists, activeTab]);
+
 
   // Handlers
   const switchTab = (tab: TabKey) => {
@@ -200,53 +291,6 @@ export default function App() {
     );
   }
 
-  // Load and Save handlers
-  const onLoad = useCallback(async () => {
-    try {
-      setBusy(true);
-      const response = await fetch(LOAD_URL.replace('{USERNAME}', USERNAME));
-      const json = await response.json();
-      const normalized = normalizeRemoteData(json);
-      
-      setLists((prev) => ({
-        ...prev,
-        [activeTab]: normalized,
-      }));
-      Alert.alert('Success', 'List loaded successfully!');
-    } catch (error) {
-      Alert.alert('Error', 'Failed to load data.');
-      console.error('Load error:', error);
-    } finally {
-      setBusy(false);
-    }
-  }, [activeTab]);
-  
-  const onSave = useCallback(async () => {
-    try {
-      setBusy(true);
-      const payload = {
-        user: USERNAME,
-        items: lists[activeTab].map((i) => i.text),
-      };
-
-      const response = await fetch(SAVE_URL.replace('{USERNAME}', USERNAME), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      
-      if (!response.ok) throw new Error('Network response was not ok');
-      Alert.alert('Success', 'List saved successfully!');
-    }
-    catch (error) {
-      Alert.alert('Error', 'Failed to save data.');
-      console.error('Save error:', error);
-    }
-    finally {
-      setBusy(false);
-    }
-  }, [lists, activeTab]);
-
   // Render
   return (
     <KeyboardAvoidingView
@@ -277,6 +321,24 @@ export default function App() {
               </Pressable>
             ))}
           </View>
+
+          {/* Load and Save button */}
+          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
+            <Pressable
+              onPress={onLoad}
+              disabled={busy}
+              style={[styles.joinButton, busy && { opacity: 0.5 }]}
+            >
+              <Text style={styles.joinText}>Load</Text>
+            </Pressable>
+            <Pressable
+              onPress={onSave}
+              disabled={busy}
+              style={[styles.joinButton, busy && { opacity: 0.5 }]}
+            >
+              <Text style={styles.joinText}>Save</Text>
+            </Pressable>
+          </View> 
 
           {/* Join button */}
           <Pressable
@@ -340,24 +402,6 @@ export default function App() {
               <Ionicons name="add-circle" size={34} color="green" />
             </Pressable>
           </View>
-
-          {/* Load and Save button */}
-          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
-            <Pressable
-              onPress={onLoad}
-              disabled={busy}
-              style={[styles.joinButton, busy && { opacity: 0.5 }]}
-            >
-              <Text style={styles.joinText}>Load</Text>
-            </Pressable>
-            <Pressable
-              onPress={onSave}
-              disabled={busy}
-              style={[styles.joinButton, busy && { opacity: 0.5 }]}
-            >
-              <Text style={styles.joinText}>Save</Text>
-            </Pressable>
-          </View> 
 
           <StatusBar style="auto" />
         </View>
