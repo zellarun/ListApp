@@ -14,6 +14,7 @@ import {
   TextInput,
   TouchableWithoutFeedback,
   View,
+  SafeAreaViewBase,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -57,6 +58,7 @@ const initialLists: Record<TabKey, ListItem[]> = {
   ],
 };
 
+// Helper to normalize remote data into ListItem[]
 function normalizeRemoteData(raw: any) {
   let arr = raw;
 
@@ -80,7 +82,6 @@ function normalizeRemoteData(raw: any) {
   });
 }
 
-
 // Main App Component
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('Todo');
@@ -98,6 +99,30 @@ export default function App() {
       [activeTab]: updater(prev[activeTab]),
     }));
   };
+
+  // Load data on mount
+  const loadInitialData = useCallback(async () => {
+    try {
+      setLoading(true);
+      const response = await fetch(LOAD_URL.replace('{USERNAME}', USERNAME));
+      const json = await response.json();
+      const normalized = normalizeRemoteData(json);
+
+      setLists((prev) => ({
+        ...prev,
+        [activeTab]: normalized,
+      }));
+    } catch (error) {
+      Alert.alert('Error', 'Failed to load data. Using defaults.');
+      console.error('Load error:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [activeTab]);
+  
+  useEffect(() => {
+    loadInitialData();
+  }, []);
 
   // Handlers
   const switchTab = (tab: TabKey) => {
@@ -165,6 +190,15 @@ export default function App() {
     setItemsForTab((prev) => prev.filter((i) => i.id !== item.id).concat(splitItems));
   };
 
+  if (loading) {
+    return (
+      <SafeAreaView style={{ flex: 1, alignItems: "center", justifyContent: "center"}}>
+        <ActivityIndicator />
+        <Text style={{ marginTop: 10 }}> Loading Remote List...</Text>
+        </SafeAreaView>
+    );
+  }
+
   // Render
   return (
     <KeyboardAvoidingView
@@ -209,11 +243,14 @@ export default function App() {
           </Pressable>
 
           {/* List */}
-          <FlatList
-            style={{ flex: 1 }} // IMPORTANT so input stays visible
+          <VirtualizedList
+            style={{ flex: 1 }}
             contentContainerStyle={{ paddingBottom: 20 }}
             keyboardShouldPersistTaps="handled"
             data={items}
+            initialNumToRender={12}
+            getItemCount={(data) => data.length}
+            getItem={(data, index) => data[index]}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => {
               const selected = selectedIds.includes(item.id);
