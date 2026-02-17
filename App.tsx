@@ -1,9 +1,12 @@
 import { StatusBar } from 'expo-status-bar';
-import React, { useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
-  FlatList,
+  SafeAreaView,
+  VirtualizedList,
+  ActivityIndicator,
   Keyboard,
   KeyboardAvoidingView,
+  Alert,
   Platform,
   Pressable,
   StyleSheet,
@@ -13,6 +16,16 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+
+const USERNAME = "zellarun";
+
+// Load and Save URLs
+const LOAD_URL = 'https://mec402.boisestate.edu/csclasses/cs402/codesnips/loadjson.php?user={USERNAME}';
+const SAVE_URL = 'https://mec402.boisestate.edu/csclasses/cs402/codesnips/savejson.php?user={USERNAME}';
+
+// Loading and busy states
+const [loading, setLoading] = useState(true);
+const [busy, setBusy] = useState(false);
 
 // Types and Initial Data
 type ListItem = {
@@ -43,6 +56,30 @@ const initialLists: Record<TabKey, ListItem[]> = {
     { id: '2', text: 'Get gas' },
   ],
 };
+
+function normalizeRemoteData(raw: any) {
+  let arr = raw;
+
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    if (Array.isArray(raw.items)) arr = raw.items;
+    else if (Array.isArray(raw.data)) arr = raw.data;
+    else arr = [];
+  }
+
+  if (!Array.isArray(arr)) return [];
+
+  return arr.map((x, idx) => {
+    if(typeof x === "string") return { id: '${Date.now()} ~ ${idx}', text: x };
+    if (typeof x === "object" && x !== null){
+      const text = x.text ?? x.name ?? x.value ?? JSON.stringify(x);
+      const id = x.id ?? '${Date.now()} ~ ${idx}';
+      return { id: String(id), text: String(text)};
+    }
+
+    return { id: '$(Date.now()} ~ ${idx}', text: String(x)};
+  });
+}
+
 
 // Main App Component
 export default function App() {
