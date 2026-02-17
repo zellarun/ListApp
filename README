@@ -1,25 +1,30 @@
-# Simple List App
+## Simple List App
 
-A small React Native + TypeScript list app built with Expo. The app is intentionally minimal but demonstrates common list behaviors and a multi-list layout with tabs.
+A small React Native + TypeScript list app built with Expo. The app is intentionally minimal but demonstrates common list behaviors and a useable list app that can load and save data elements remotely.
 
 ## What It Does
-- Creates a simple list app with a bit of dummy data so the UI has content on first launch.
+- Creates a simple virtualized list app with a bit of dummy data so the UI has content on first launch.
 - Has an icon button to create a new list entry.
 - Has an icon button to delete a list entry.
 - Can select multiple items and combine them into a single item.
 - Can support multiple lists using tabs across the top.
+- Can load and same multiple items in the list
+- Can create a cache and load and release the data into memory dynamically
 
 ## Expected UI Behavior
-- The top area shows tabs for each list. Tapping a tab switches the active list.
+- The top area shows tabs for each list and cache. Tapping a tab switches the active list.
 - Each list shows items with a selectable state.
 - When two or more items are selected, a Combine action merges them into one item.
 - Add and Delete actions are represented as icons for quick access.
+- Save and Load actions are represented as buttons
+
 
 ## Sample Data
 The app boots with a small set of items, for example:
 - Buy coffee
 - Read a chapter
 - Walk the dog
+User can save and load the set of items and also create a cache
 
 ## Tech Stack
 - React Native
@@ -28,6 +33,6 @@ The app boots with a small set of items, for example:
 
 ## Running The App
 1. Install dependencies with your package manager.
-2. Start the Expo dev server.
+2. Start the Expo dev server (npx expo start)
 3. Open on iOS Simulator, Android Emulator, or Expo Go.
 

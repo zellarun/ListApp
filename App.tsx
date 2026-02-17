@@ -18,11 +18,11 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
-const USERNAME = "zellarun";
+const USERNAME = "zellarunningr";
 
 // Load and Save URLs
-const LOAD_URL = `https://mec402.boisestate.edu/csclasses/cs402/codesnips/loadjson.php?user={USERNAME}`;
-const SAVE_URL = `https://mec402.boisestate.edu/csclasses/cs402/codesnips/savejson.php?user={USERNAME}`;
+const LOAD_URL = `https://mec402.boisestate.edu/csclasses/cs402/codesnips/loadjson.php?user=${USERNAME}`;
+const SAVE_URL = `https://mec402.boisestate.edu/csclasses/cs402/codesnips/savejson.php?user=${USERNAME}`;
 
 // Cache URLs
 const LISTSIZE_URL = `https://mec402.boisestate.edu/csclasses/cs402/codesnips/listsize.php?user=${USERNAME}`;
@@ -46,17 +46,17 @@ const tabs: TabKey[] = ['Todo', 'School', 'Errands'];
 // Initial lists for each tab
 const initialLists: Record<TabKey, ListItem[]> = {
   Todo: [
-    { id: '1', text: 'Buy groceries' },
-    { id: '2', text: 'Walk the dog' },
-    { id: '3', text: 'Read a book' },
+    { id: 'todo-1', text: 'Buy groceries' },
+    { id: 'todo-2', text: 'Walk the dog' },
+    { id: 'todo-3', text: 'Read a book' },
   ],
   School: [
-    { id: '1', text: 'Finish readings' },
-    { id: '2', text: 'Submit HW' },
+    { id: 'school-1', text: 'Finish readings' },
+    { id: 'school-2', text: 'Submit HW' },
   ],
   Errands: [
-    { id: '1', text: 'Post office' },
-    { id: '2', text: 'Get gas' },
+    { id: 'errands-1', text: 'Post office' },
+    { id: 'errands-2', text: 'Get gas' },
   ],
 };
 
@@ -86,7 +86,7 @@ function normalizeRemoteData(raw: any): ListItem[] {
         return { id: String(id), text: String(text) };
       }
 
-    return { id: `$(Date.now()}-${idx}`, text: String(x) };
+    return { id: `${Date.now()}-${idx}`, text: String(x) };
   })
   .filter((item) => item.text.trim().length > 0);
 }
@@ -114,6 +114,8 @@ export default function App() {
 
   const [newText, setNewText] = useState('');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [didInitialLoad, setDidInitialLoad] = useState(false);
+  const listRef = useRef<VirtualizedList<ListItem>>(null);
 
   // Loading and busy states
   const [loading, setLoading] = useState(true);
@@ -235,6 +237,7 @@ export default function App() {
     console.log("Load error:", error?.message ?? error);
   } finally {
     setLoading(false);
+    setDidInitialLoad(true);
   }
 }, [activeTab]);
 
@@ -273,35 +276,43 @@ export default function App() {
 
     const normalized = normalizeRemoteData(json);
 
-    setLists((prev) => ({
-      ...prev,
-      [activeTab]: normalized,
-    }));
+    // Load into CACHE list only
+    cacheRef.current.clear();
+    setRemoteItems(
+      normalized.map((it, idx) => ({
+        id: `remote-${idx}`,
+        text: it.text,
+        _cached: true,
+      }))
+    );
+    setCacheStats({ fetched: normalized.length, total: normalized.length });
+    setShowCache(true);
 
-    Alert.alert("Success", "List loaded successfully!");
-
+    Alert.alert("Success", "Remote list loaded into Cache tab!");
   } catch (error: any) {
     Alert.alert("Error", "Failed to load data.");
     console.log("Load error:", error?.message ?? error);
   } finally {
     setBusy(false);
   }
-}, [activeTab]);
+}, []);
+
 
   // Save handler
   const onSave = useCallback(async () => {
   try {
     setBusy(true);
 
+    // Save CACHE list when in cache mode
     const payload = {
-      items: lists[activeTab].map((i) => i.text),
+      items: (showCache ? remoteItems : lists[activeTab])
+        .map((i) => i.text)
+        .filter((t) => t.trim().length > 0),
     };
 
     const response = await fetch(SAVE_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
@@ -314,27 +325,33 @@ export default function App() {
       return;
     }
 
-    // Clear cache and refresh remote size so cache view reflects the new save
+    // Refresh listsize placeholders so Cache mode can lazy-load too
     cacheRef.current.clear();
     fetchRemoteListSize();
 
-    Alert.alert("Success", "List saved successfully!");
-
+    Alert.alert("Success", showCache ? "Cache list saved!" : "Tab list saved!");
   } catch (error: any) {
     Alert.alert("Error", "Failed to save data.");
     console.log("Save error:", error?.message ?? error);
   } finally {
     setBusy(false);
   }
-}, [lists, activeTab]);
+}, [showCache, remoteItems, lists, activeTab, fetchRemoteListSize]);
+
 
 
   // Handlers
   const switchTab = (tab: TabKey) => {
     setActiveTab(tab);
     setSelectedIds([]);
-    setNewText('');
+    setNewText(" ");
     setShowCache(false); // return to tab view when switching tabs
+    
+    // Scroll to top when switching tabs
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToOffset?.({ offset: 0, animated: false });
+    });
+
     Keyboard.dismiss();
   };
 
@@ -344,7 +361,7 @@ export default function App() {
     if (trimmed === '') return;
 
     const newItem: ListItem = {
-      id: Date.now().toString(),
+      id: `${activeTab}-${Date.now()}`,
       text: trimmed,
     };
 
@@ -397,14 +414,15 @@ export default function App() {
   };
 
   // Show loading indicator
-  if (loading) {
-    return (
-      <SafeAreaView style={{ flex: 1, alignItems: "center", justifyContent: "center"}}>
-        <ActivityIndicator />
-        <Text style={{ marginTop: 10 }}> Loading Remote List...</Text>
-        </SafeAreaView>
-    );
-  }
+  if (loading && !didInitialLoad) {
+  return (
+    <SafeAreaView style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+      <ActivityIndicator />
+      <Text style={{ marginTop: 10 }}>Loading Remote List...</Text>
+    </SafeAreaView>
+  );
+}
+
 
   // Render
   return (
@@ -486,6 +504,8 @@ export default function App() {
 
           {/* List */}
           <VirtualizedList
+            key={showCache ? "cache" : activeTab}
+            extraData={{ activeTab, showCache, selectedIds}}
             style={{ flex: 1 }}
             contentContainerStyle={{ paddingBottom: 20 }}
             keyboardShouldPersistTaps="handled"
